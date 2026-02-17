@@ -43,8 +43,15 @@ I created this project to learn and demonstrate key concepts of Generative AI an
 
 4.  **Run the application**:
     ```bash
-    streamlit run app.py
     ```
+
+5.  **Access the App**:
+    The app will launch in your default browser.
+    - **Local URL**: [http://localhost:8501](http://localhost:8501)
+    - **Network URL**: http://10.196.24.101:8501
+
+## 📸 Screenshot
+![App Screenshot](screenshot.png)
 
 ## 📂 Project Structure
 - `app.py`: The Streamlit frontend application.
