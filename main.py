@@ -1,35 +1,56 @@
 import os
-from langchain_huggingface import HuggingFaceEmbeddings
+import sys
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
-data_dir="C:/Users/tarik/Desktop/proje_klasoru/data"
-all_docs = []
-embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
 
-print("Dosyalar işleniyor...")
-for file in os.listdir(data_dir):
-    if file.endswith(".pdf"):
-        file_path=os.path.join(data_dir,file)
-        loader=PyPDFLoader(file_path)
-        pages=loader.load()
+sys.stdout.reconfigure(encoding='utf-8')
 
-        year=file.replace(".pdf","")
+PDF_PATHS = {
+    "2020": "data/2020.pdf",
+    "2021": "data/2021.pdf",
+}
+PERSIST_DIR = "./chroma_db_thy"
+EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
-        for page in pages:
-            page.metadata["year"]=year
-            all_docs.append(page)  
+def load_pdfs():
+    all_docs = []
+    for year, path in PDF_PATHS.items():
+        if not os.path.exists(path):
+            print(f"Dosya bulunamadi: {path}")
+            continue
+        loader = PyPDFLoader(path)
+        docs = loader.load()
+        for doc in docs:
+            doc.metadata["year"] = year
+        all_docs.extend(docs)
+        print(f"{year}: {len(docs)} sayfa yuklendi")
+    return all_docs
 
-text_splitter=RecursiveCharacterTextSplitter(
-    chunk_size=1000,
-    chunk_overlap=200,
-    separators=["\n\n", "\n", ". ", " "]
-)
-splits=text_splitter.split_documents(all_docs)
+def split_docs(docs):
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200,
+        separators=["\n\n", "\n", ". ", " "]
+    )
+    return splitter.split_documents(docs)
 
-vectorstore=Chroma.from_documents(
-    documents=splits,
-    embedding=embeddings,
-    persist_directory="./chroma_db_thy"
-)
-print("veritabani kaydedildi")
+def main():
+    print("PDF'ler yukleniyor...")
+    docs = load_pdfs()
+    if not docs:
+        print("Hic dokuman yuklenemedi.")
+        return
+
+    print("Parcalaniyor...")
+    splits = split_docs(docs)
+    print(f"{len(docs)} sayfa -> {len(splits)} chunk")
+
+    print("Vektör veritabani olusturuluyor...")
+    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+    Chroma.from_documents(splits, embeddings, persist_directory=PERSIST_DIR)
+    print(f"Tamamlandi! {len(splits)} chunk '{PERSIST_DIR}' dizinine kaydedildi.")
+
+if __name__ == "__main__":
+    main()
