@@ -2,83 +2,87 @@ import streamlit as st
 import os
 import sys
 
-# Add current directory to sys.path to ensure imports work
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
-from rag import get_answer
+from rag_graph import get_answer
 
-# Sayfa Yapılandırması
 st.set_page_config(
-    page_title="THY Faaliyet Raporu Asistanı",
+    page_title="THY Faaliyet Raporu Asistani",
     page_icon="✈️",
-    layout="centered"
+    layout="wide"
 )
 
-# Başlık ve Açıklama
-st.title("✈️ THY Rapor Asistanı")
-st.markdown("""
-Bu asistan **Türk Hava Yolları Teknik A.Ş.**'nin 2020-2023 faaliyet raporları üzerinden sorularınızı cevaplar.
-""")
+st.sidebar.title("Ayarlar")
+st.sidebar.markdown("---")
+selected_years = st.sidebar.multiselect(
+    "Analiz Edilecek Yillar",
+    options=["2020", "2021", "2022", "2023"],
+    default=["2020", "2021", "2022", "2023"],
+    help="Sadece sectiginiz yillara ait raporlarda arama yapilir."
+)
+st.sidebar.markdown("---")
+st.sidebar.info("Ipucu: 'Peki ya kargo?' gibi devam sorulari sorabilirsiniz.")
+if st.sidebar.button("Sohbeti Temizle"):
+    st.session_state.messages = []
+    st.rerun()
 
-# Uyarılar
-st.info("💡 **Not:** 2022 ve 2023 raporları resim formatında olduğu için sadece 2020 ve 2021 yılları için detaylı cevap alabilirsiniz.")
+st.title("THY Rapor Asistani (LangGraph + Adaptive RAG)")
+st.markdown("**Turk Hava Yollari Teknik A.S.** faaliyet raporlari uzerinden sorularinizi cevaplar.")
 
-# Sohbet Geçmişi (Session State)
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Geçmiş mesajları göster
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
         if "citations" in message and message["citations"]:
-            with st.expander("📚 Kaynaklar"):
+            with st.expander("Kaynaklar"):
                 for citation in message["citations"]:
                     st.markdown(f"- {citation}")
 
-# Kullanıcı Girişi
-if prompt := st.chat_input("Sorunuzu buraya yazın..."):
-    # Kullanıcı mesajını ekle
+if prompt := st.chat_input("Sorunuzu buraya yazin..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Asistan Cevabı
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
-        full_response = ""
-        
-        with st.spinner("Raporlar taranıyor..."):
+        with st.spinner("LangGraph dusunuyor... (ara > uret > degerlendir)"):
             try:
-                result = get_answer(prompt)
-                full_response = result['result']
-                
-                # Kaynakları düzenle
+                chat_history = []
+                msgs = st.session_state.messages[:-1]
+                current_user_msg = None
+                for msg in msgs:
+                    if msg["role"] == "user":
+                        current_user_msg = msg["content"]
+                    elif msg["role"] == "assistant" and current_user_msg:
+                        chat_history.append((current_user_msg, msg["content"]))
+                        current_user_msg = None
+
+                result = get_answer(prompt, chat_history, selected_years)
+                full_response = result["result"]
+
                 citations = []
-                seen_sources = set()
-                for doc in result['source_documents']:
-                    source = doc.metadata.get('source', 'Bilinmiyor')
-                    page = doc.metadata.get('page', 0)
-                    filename = os.path.basename(source)
-                    source_key = f"**{filename}** - Sayfa {page}"
-                    
-                    if source_key not in seen_sources:
-                        citations.append(source_key)
-                        seen_sources.add(source_key)
-                
+                seen = set()
+                for doc in result["source_documents"]:
+                    source = doc.metadata.get("source", "")
+                    page = doc.metadata.get("page", 0)
+                    year = doc.metadata.get("year", "")
+                    key = f"**{os.path.basename(source)} (Yil: {year})** - Sayfa {page}"
+                    if key not in seen:
+                        citations.append(key)
+                        seen.add(key)
+
                 message_placeholder.markdown(full_response)
-                
                 if citations:
-                    with st.expander("📚 Kaynaklar"):
-                        for citation in citations:
-                            st.markdown(f"- {citation}")
-                            
-                # Cevabı geçmişe ekle
+                    with st.expander("Kaynaklar"):
+                        for c in citations:
+                            st.markdown(f"- {c}")
+
                 st.session_state.messages.append({
-                    "role": "assistant", 
+                    "role": "assistant",
                     "content": full_response,
                     "citations": citations
                 })
-                
             except Exception as e:
-                st.error(f"Bir hata oluştu: {e}")
+                st.error(f"Hata: {e}")
