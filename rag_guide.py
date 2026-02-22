@@ -235,6 +235,191 @@ Temel RAG'ı kurduktan sonra sırayla eklenebilecek teknikler:
 
 
 # =============================================================================
+# BÖLÜM 5B: İLERİ SEVİYE RAG TEKNİKLERİ (Detaylı)
+# =============================================================================
+
+ILERI_TEKNIKLER = """
+─────────────────────────────────────────────────────────────────
+SELF-RAG — Modelin kendi kararını vermesi
+─────────────────────────────────────────────────────────────────
+Nedir?
+   Modelin her adımda "ne yapmalıyım?" kararını bizzat vermesidir.
+   Standart RAG'da akış sabittir: her zaman ara, her zaman üret.
+   Self-RAG'da model şunu sorar:
+      "Bu soruya cevap vermek için kaynak aramam gerekiyor mu?"
+      "Getirdiğim chunk'lar alakalı mı?"
+      "Ürettiğim cevap kaynaklara sadık mı?"
+
+Nasıl çalışır?
+   Model şu özel token'ları üretir:
+   [Retrieve]      → arama gerekli mi?
+   [IsREL]         → chunk alakalı mı?
+   [IsSUP]         → cevap chunk'larla destekleniyor mu?
+   [IsUSE]         → cevap kullanıcıya yararlı mı?
+
+   Örnek akış:
+   Soru gelir → Model [Retrieve]=YES derse → ara → [IsREL] değerlendir
+             → [Retrieve]=NO derse → direk cevap üret (arama yok!)
+
+Bu projede ne yaptık?
+   Adaptive RAG ile benzer: grade_answer node'u "useful/not_useful"
+   kararı veriyor. Bu Self-RAG'ın basitleştirilmiş hali.
+   Fark: gerçek Self-RAG özel fine-tune edilmiş model gerektirir.
+
+Ne zaman kullan?
+   → Bazı sorular için kesinlikle kaynak gerekli, bazıları için değil.
+     Örnek: "Merhaba" → arama gereksiz | "2022 kârı ne?" → arama gerekli.
+   → Token maliyetini düşürmek istiyorsan.
+
+Zorluk: ⭐⭐⭐
+   Fine-tuned model (Llama-2-7b-self-rag) veya karmaşık LangGraph
+   yapısı gerektirir. Başlangıç seviyesi için önerilmez.
+
+Kod iskelet:
+   def should_retrieve(state):
+       prompt = "Bu soruya cevap vermek için belge araması gerekiyor mu? YES/NO"
+       decision = llm.invoke(prompt + state["question"])
+       return "retrieve" if "YES" in decision else "generate_direct"
+
+   workflow.add_conditional_edges(START, should_retrieve, {
+       "retrieve": "retrieve",
+       "generate_direct": "generate"
+   })
+
+
+─────────────────────────────────────────────────────────────────
+RAPTOR — Hiyerarşik Özetleme ile İndeksleme
+─────────────────────────────────────────────────────────────────
+Nedir?
+   Recursive Abstractive Processing for Tree-Organized Retrieval.
+   Belgeler hiyerarşik bir ağaç yapısında indekslenir:
+   Belge → Küçük chunk'lar (yaprak)
+         → Küçük chunk özetleri (ara düğüm)
+         → Genel belge özeti (kök)
+
+   Arama yapılırken sadece yaprak değil, her seviyede arama yapılır.
+
+Neden işe yarar?
+   "2020'den 2023'e kadar genel trendler neler?" gibi
+   ÇOK GENİŞ KAPSAMLI sorularda tek bir chunk yetmez.
+   Özet ağacında üst düzey node'lar bu tür soruları cevaplar.
+
+Nasıl yapılır?
+   1. Chunk'lara böl (yapraklar)
+   2. Her X chunk'ı LLM ile özetle (ara düğümler)
+   3. Ara düğümleri de özetle (kök)
+   4. Tüm seviyeleri ChromaDB'ye ekle
+   5. Arama sırasında tüm seviyelerde ara
+
+Basitleştirilmiş kod:
+   leaves   = split_documents(docs, chunk_size=300)
+   summaries = [llm.invoke("Özetle: " + " ".join(
+       [l.page_content for l in leaves[i:i+5]])) for i in range(0, len(leaves), 5)]
+   all_docs = leaves + summary_docs
+   vectordb = Chroma.from_documents(all_docs, embeddings)
+
+Bu projede neden uygulamadık?
+   → 57 sayfalık rapor için overkill (fazla karmaşık)
+   → Groq free token limiti özetleme döngüsü için yetmezdi
+   → Sonuç iyileşmesi marjinal, maliyet yüksek
+
+Ne zaman kullan? (Kesinlikle gerekli olduğu durumlar)
+   → 500+ sayfalık belgeler (kanun kitabı, ansiklopedi vb.)
+   → "Genel özet nedir?" tarzı geniş kapsamlı sorular çoksa
+   → Hiyerarşik bir veri yapısı varsa (bölüm > konu > detay)
+
+
+─────────────────────────────────────────────────────────────────
+MULTI-MODAL RAG — Görselleri de İndeksle
+─────────────────────────────────────────────────────────────────
+Nedir?
+   PDF içindeki metin değil, aynı zamanda GRAFİKLER, TABLOLAR,
+   DİYAGRAMLAR ve GÖRSELLER de aranabilir ve LLM'e gönderilebilir.
+
+İki yaklaşım var:
+
+YAKLAŞıM A — Görselleri metne çevir (bu projede yaptık):
+   Sayfa → PNG → Vision API → metin → ChromaDB
+   Artı  : Mevcut RAG pipeline değişmez.
+   Eksi  : Görseldeki bağlamın bir kısmı kaybolur.
+
+YAKLAŞıM B — Görselleri embedding'e çevir (gerçek multimodal):
+   CLIP, LLaVA veya GPT-4V ile görsel → embedding vektörü
+   Bu vektörü ChromaDB'ye kaydet.
+   Soru gelince: metin + görsel embedding'leri birlikte ara.
+
+   from langchain_community.embeddings import OpenCLIPEmbeddings
+   image_embedding = OpenCLIPEmbeddings()
+   # Görsel ve metin aynı vektör uzayında
+
+Ne zaman kullan?
+   → PDF'lerde tablo veya grafik yoğunsa ve metin yetersizse
+   → "Bu grafik neyi gösteriyor?" tarzı sorular gelecekse
+   → Tıbbi görüntüler, mühendislik şemaları, haritalar
+
+Bu projede nasıl uyguladık?
+   Yaklaşım A: Groq Vision ile her sayfayı metin haline getirdik.
+   Tablolar çoğunlukla başarılı, karmaşık grafikler kısmi başarı.
+
+Gerçek Multi-modal için ne gerekir?
+   pip install open_clip_torch pillow
+   Model: GPT-4V, Claude-3, LLaVA, Idefics
+   ChromaDB multi-modal collection
+
+
+─────────────────────────────────────────────────────────────────
+AGENTIC RAG — Çok Kaynaklı Akıllı Routing
+─────────────────────────────────────────────────────────────────
+Nedir?
+   Tek bir vektör tabanına değil, birden fazla veri kaynağına
+   akıllıca yönlendiren bir RAG sistemidir.
+
+   Klasik RAG: Soru → PDF Vektör DB → Cevap
+   Agentic RAG: Soru → Router → [PDF mi? Web mi? SQL mi?] → Cevap
+
+Kaynaklar şunlar olabilir:
+   - Vektör DB (PDF, doküman)
+   - Web arama (Tavily, SerpAPI)
+   - SQL veritabanı
+   - API endpoint
+   - E-posta / Slack geçmişi
+
+Nasıl çalışır? (LangGraph ile):
+
+   def route_question(state):
+       # LLM'e sor: "Bu soruyu nerede aramalıyım?"
+       prompt = (
+           "Soru: " + state["question"] + "\n"
+           "Secenekler: pdf, web, sql\n"
+           "Sadece bir kelime yaz."
+       )
+       decision = llm.invoke(prompt)
+       return decision.content.strip()
+
+   workflow.add_conditional_edges(START, route_question, {
+       "pdf": "retrieve_pdf",
+       "web": "search_web",
+       "sql": "query_database"
+   })
+
+Neden bu projede yapmadık?
+   → Tek kaynak (PDF raporlar) yeterliydi
+   → Web araması Groq rate limitini hızlandırırdı
+
+Ne zaman şart olur?
+   → Güncel bilgi + geçmiş bilgi karışık sorular geliyorsa
+     ("Bugünkü döviz kuru ve 2023 raporu baz alarak...")
+   → Birden fazla şirket/kaynak varsa
+   → Kullanıcı sorgusuna göre kaynak seçimi gerekiyorsa
+
+Araçlar:
+   Tavily  → web arama (LangChain ile entegre, ücretsiz plan var)
+   DuckDuckGo Search → ücretsiz web arama
+   SQLDatabaseChain → SQL sorguları
+"""
+
+
+# =============================================================================
 # BÖLÜM 6: DEĞERLENDİRME (Evaluation)
 # =============================================================================
 
