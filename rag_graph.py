@@ -27,6 +27,12 @@ vectordb = Chroma(
 )
 retriever = vectordb.as_retriever(search_kwargs={"k": 10})
 
+pc_vectordb = Chroma(
+    persist_directory="./chroma_db_thy_pc",
+    collection_name="thy_parent_child",
+    embedding_function=embeddings
+)
+
 
 class RAGState(TypedDict):
     question: str
@@ -63,16 +69,45 @@ def generate_hypothesis(state: RAGState):
     return {"hypothesis": hypothesis}
 
 def retrieve(state: RAGState):
-    year_filter = state.get("year_filter", [])
+    year_filter  = state.get("year_filter", [])
     search_query = state.get("hypothesis") or state["question"]
-    if year_filter:
-        docs = vectordb.similarity_search(
+
+    # Parent-Child DB varsa onu kullan (2020-2021 icin)
+    # Child chunk'larla ara, parent_content'i LLM'e gonder
+    pc_filter = [y for y in (year_filter or ["2020", "2021"]) if y in ["2020", "2021"]]
+    if pc_filter:
+        child_hits = pc_vectordb.similarity_search(
             search_query,
-            k=10,
-            filter={"year": {"$in": year_filter}}
+            k=5,
+            filter={"year": {"$in": pc_filter}}
         )
+        # Child'in metadata'sindaki buyuk parent'i al
+        parent_docs = []
+        seen_parents = set()
+        for hit in child_hits:
+            pid = hit.metadata.get("parent_id", "")
+            if pid not in seen_parents:
+                seen_parents.add(pid)
+                from langchain_core.documents import Document
+                parent_docs.append(Document(
+                    page_content=hit.metadata.get("parent_content", hit.page_content),
+                    metadata=hit.metadata
+                ))
     else:
-        docs = vectordb.similarity_search(search_query, k=10)
+        parent_docs = []
+
+    # 2022-2023 veya ek sonuclar icin normal DB'den de ara
+    other_years = [y for y in (year_filter or []) if y not in ["2020", "2021"]]
+    if other_years:
+        extra = vectordb.similarity_search(
+            search_query, k=5, filter={"year": {"$in": other_years}}
+        )
+    elif not year_filter:  # hic filtre yok: normal DB'den de ara
+        extra = vectordb.similarity_search(search_query, k=5)
+    else:
+        extra = []
+
+    docs = parent_docs + extra
     return {"documents": docs}
 
 
