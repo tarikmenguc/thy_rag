@@ -30,6 +30,7 @@ retriever = vectordb.as_retriever(search_kwargs={"k": 10})
 
 class RAGState(TypedDict):
     question: str
+    hypothesis: str      # HyDE: soruden uretilen hayali cevap
     documents: list
     answer: str
     grade: str
@@ -37,16 +38,41 @@ class RAGState(TypedDict):
     year_filter: list
 
 
+def generate_hypothesis(state: RAGState):
+    """
+    HyDE: Soruya hayali bir cevap uret.
+    Bu cevap gercek olmayabilir ama semantik olarak
+    gercek dokumanlara daha yakin olacak.
+    """
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """Sen bir THY Teknik uzmanissin.
+    Asagidaki soruya kisa ve net bir cevap yaz.
+    Cevap hayali olabilir ama gercekci olmali.
+    1-2 cumle yeterli."""),
+        ("human", "{question}")
+    ])
+    chain = prompt | llm
+    try:
+        result = chain.invoke({"question": state["question"]})
+        hypothesis = result.content
+    except Exception as e:
+        if "429" in str(e) or "rate_limit" in str(e).lower():
+            hypothesis = state["question"]  # rate limit: soruyu oldugu gibi kullan
+        else:
+            raise
+    return {"hypothesis": hypothesis}
+
 def retrieve(state: RAGState):
     year_filter = state.get("year_filter", [])
+    search_query = state.get("hypothesis") or state["question"]
     if year_filter:
         docs = vectordb.similarity_search(
-            state["question"],
+            search_query,
             k=10,
             filter={"year": {"$in": year_filter}}
         )
     else:
-        docs = retriever.invoke(state["question"])
+        docs = vectordb.similarity_search(search_query, k=10)
     return {"documents": docs}
 
 
@@ -95,10 +121,12 @@ def decide_next(state: RAGState) -> str:
 
 
 workflow = StateGraph(RAGState)
+workflow.add_node("generate_hypothesis", generate_hypothesis)
 workflow.add_node("retrieve", retrieve)
 workflow.add_node("generate", generate)
 workflow.add_node("grade_answer", grade_answer)
-workflow.add_edge(START, "retrieve")
+workflow.add_edge(START, "generate_hypothesis")   # HyDE ilk adim
+workflow.add_edge("generate_hypothesis", "retrieve")
 workflow.add_edge("retrieve", "generate")
 workflow.add_edge("generate", "grade_answer")
 workflow.add_conditional_edges("grade_answer", decide_next, {"end": END, "retrieve": "retrieve"})
@@ -108,6 +136,7 @@ app = workflow.compile()
 def get_answer(query: str, chat_history=[], year_filter=None) -> dict:
     result = app.invoke({
         "question": query,
+        "hypothesis": "",
         "documents": [],
         "answer": "",
         "grade": "",
